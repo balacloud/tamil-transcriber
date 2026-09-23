@@ -66,6 +66,7 @@
   .status { font-size: 0.85rem; color: #888; }
   .status.ok { color: #1a9c4a; }
   .status.err { color: #d33; }
+  .status.busy { color: #b8860b; }
   textarea {
     width: 100%;
     min-height: 140px;
@@ -77,6 +78,7 @@
   }
   .dl-btn { background: #1a9c4a; margin-top: 8px; }
   .small { font-size: 0.8rem; color: #999; margin-top: 6px; }
+  .note { font-size: 0.8rem; color: #888; margin-top: 10px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -107,6 +109,7 @@
   <input type="file" id="fileInput" accept=".m4a,audio/*" multiple>
   <div id="fileList"></div>
   <button id="goBtn" disabled>Transcribe</button>
+  <p class="note">Short clips (under ~25 seconds) are transcribed instantly. Longer recordings automatically use background processing, which can take anywhere from a few minutes up to an hour or more for very long files. Keep this tab open and your device awake until it finishes. Files must be under 2 hours each &mdash; split anything longer before uploading.</p>
 </div>
 
 <div class="card" id="resultsCard" style="display:none;">
@@ -125,6 +128,8 @@ const resultsEl = document.getElementById('results');
 const modeSelect = document.getElementById('mode');
 
 let files = [];
+const SHORT_LIMIT_SECONDS = 25; // safety margin under the 30s REST cap
+const MAX_BATCH_SECONDS = 7080; // 1h58m safety margin under Sarvam's 2-hour batch cap
 
 apiKeyInput.value = localStorage.getItem('sarvam_api_key') || '';
 apiKeyInput.addEventListener('input', () => {
@@ -157,6 +162,19 @@ function renderFileList() {
   goBtn.disabled = files.length === 0;
 }
 
+function getAudioDuration(file) {
+  return new Promise((resolve) => {
+    const audio = document.createElement('audio');
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => {
+      URL.revokeObjectURL(audio.src);
+      resolve(audio.duration || 0);
+    };
+    audio.onerror = () => resolve(0); // if duration can't be read, fall back to batch path
+    audio.src = URL.createObjectURL(file);
+  });
+}
+
 goBtn.addEventListener('click', async () => {
   const apiKey = apiKeyInput.value.trim();
   if (!apiKey) { alert('Please paste your API key first.'); return; }
@@ -169,15 +187,27 @@ goBtn.addEventListener('click', async () => {
 
   for (let i = 0; i < files.length; i++) {
     const statusEl = document.getElementById(`status-${i}`);
-    statusEl.textContent = 'processing...';
+    statusEl.textContent = 'checking length...';
+    statusEl.className = 'status busy';
     try {
-      const transcript = await transcribeFile(files[i], apiKey, modeSelect.value);
+      const duration = await getAudioDuration(files[i]);
+      if (duration > MAX_BATCH_SECONDS) {
+        throw new Error(`This recording is about ${(duration/60).toFixed(0)} minutes long, which is over Sarvam's 2-hour limit per file. Please split it into two shorter files and try each separately.`);
+      }
+      let transcript;
+      if (duration > 0 && duration <= SHORT_LIMIT_SECONDS) {
+        statusEl.textContent = 'transcribing...';
+        transcript = await transcribeShort(files[i], apiKey, modeSelect.value);
+      } else {
+        statusEl.textContent = 'processing (longer file)...';
+        transcript = await transcribeLong(files[i], apiKey, modeSelect.value, statusEl);
+      }
       statusEl.textContent = 'done';
-      statusEl.classList.add('ok');
+      statusEl.className = 'status ok';
       addResultBlock(files[i].name, transcript);
     } catch (err) {
       statusEl.textContent = 'failed';
-      statusEl.classList.add('err');
+      statusEl.className = 'status err';
       addResultBlock(files[i].name, 'ERROR: ' + err.message);
     }
   }
@@ -186,7 +216,8 @@ goBtn.addEventListener('click', async () => {
   goBtn.textContent = 'Transcribe';
 });
 
-async function transcribeFile(file, apiKey, mode) {
+// Path A: short clips, instant sync REST endpoint (<=30s server-side limit)
+async function transcribeShort(file, apiKey, mode) {
   const formData = new FormData();
   formData.append('file', file, file.name);
   formData.append('model', 'saaras:v3');
@@ -205,6 +236,88 @@ async function transcribeFile(file, apiKey, mode) {
   }
   const data = await response.json();
   return data.transcript || '(empty transcript)';
+}
+
+// Path B: longer recordings, async Batch API (create job -> upload -> start -> poll -> read result)
+async function transcribeLong(file, apiKey, mode, statusEl) {
+  const headersJson = { 'api-subscription-key': apiKey, 'Content-Type': 'application/json' };
+  const headersAuth = { 'api-subscription-key': apiKey };
+
+  // 1. Initiate job
+  const initRes = await fetch('https://api.sarvam.ai/speech-to-text/job/v1', {
+    method: 'POST',
+    headers: headersJson,
+    body: JSON.stringify({
+      job_parameters: { model: 'saaras:v3', mode: mode, language_code: 'ta-IN' }
+    })
+  });
+  if (!initRes.ok) throw new Error(`Job creation failed: ${await initRes.text()}`);
+  const initData = await initRes.json();
+  const jobId = initData.job_id;
+
+  // 2. Request a presigned upload URL for this file
+  const uploadUrlRes = await fetch('https://api.sarvam.ai/speech-to-text/job/v1/upload-files', {
+    method: 'POST',
+    headers: headersJson,
+    body: JSON.stringify({ job_id: jobId, files: [file.name] })
+  });
+  if (!uploadUrlRes.ok) throw new Error(`Upload URL request failed: ${await uploadUrlRes.text()}`);
+  const uploadUrlData = await uploadUrlRes.json();
+  const entry = uploadUrlData.upload_urls[file.name];
+  const uploadUrl = (entry && entry.file_url) ? entry.file_url : entry;
+
+  // 3. Upload the actual audio bytes to that URL
+  const putRes = await fetch(uploadUrl, { method: 'PUT', body: file });
+  if (!putRes.ok) throw new Error(`File upload failed: ${putRes.status}`);
+
+  // 4. Start the job
+  const startRes = await fetch(`https://api.sarvam.ai/speech-to-text/job/v1/${jobId}/start`, {
+    method: 'POST',
+    headers: headersAuth
+  });
+  if (!startRes.ok) throw new Error(`Job start failed: ${await startRes.text()}`);
+
+  // 5. Poll status until complete (up to 3 hours for very long files)
+  let statusData;
+  let state = 'Pending';
+  let attempts = 0;
+  const MAX_ATTEMPTS = 360; // 360 x 30s = 3 hours max wait
+  while (state !== 'Completed' && state !== 'Failed' && attempts < MAX_ATTEMPTS) {
+    await new Promise(r => setTimeout(r, 30000));
+    attempts++;
+    statusEl.textContent = `processing (check ${attempts}, ~${Math.round(attempts*0.5)} min elapsed)...`;
+    const statusRes = await fetch(`https://api.sarvam.ai/speech-to-text/job/v1/${jobId}/status`, {
+      headers: headersAuth
+    });
+    if (!statusRes.ok) throw new Error(`Status check failed: ${await statusRes.text()}`);
+    statusData = await statusRes.json();
+    state = statusData.job_state || statusData.status || 'Pending';
+  }
+
+  if (state === 'Failed') throw new Error('Transcription job failed on the server.');
+  if (state !== 'Completed') throw new Error('Timed out waiting for transcription to finish (over 3 hours). Try again or split the file into smaller pieces.');
+
+  // 6. Extract the transcript from whichever shape the API returned
+  if (statusData.transcript) return statusData.transcript;
+
+  if (Array.isArray(statusData.output_files) && statusData.output_files.length) {
+    let combined = '';
+    for (const f of statusData.output_files) {
+      const url = f.file_url || f.url;
+      if (!url) continue;
+      const r = await fetch(url);
+      const contentType = r.headers.get('content-type') || '';
+      if (contentType.includes('json')) {
+        const j = await r.json();
+        combined += (j.transcript || JSON.stringify(j)) + '\n';
+      } else {
+        combined += (await r.text()) + '\n';
+      }
+    }
+    if (combined.trim()) return combined.trim();
+  }
+
+  return '(Job completed, but transcript format was unexpected. Raw response: ' + JSON.stringify(statusData) + ')';
 }
 
 function addResultBlock(filename, transcript) {

@@ -84,7 +84,7 @@
 <body>
 
 <h1>Tamil Voice-to-Text</h1>
-<p class="sub">Convert M4A recordings to Tamil text, right in your browser.</p>
+<p class="sub">Convert voice recordings to Tamil text, right in your browser.</p>
 
 <div class="card">
   <label for="apiKey">API Key (paste once, saved on this device only)</label>
@@ -104,9 +104,9 @@
 <div class="card">
   <label>Audio files</label>
   <div class="drop" id="dropZone">
-    Tap to choose M4A files<br><span class="small">or drag and drop them here</span>
+    Tap to choose audio files<br><span class="small">M4A, MP3, or WAV &mdash; drag and drop works too</span>
   </div>
-  <input type="file" id="fileInput" accept=".m4a,audio/*" multiple>
+  <input type="file" id="fileInput" accept=".m4a,.mp3,.wav,audio/*" multiple>
   <div id="fileList"></div>
   <button id="goBtn" disabled>Transcribe</button>
   <p class="note">Short clips (under ~25 seconds) are transcribed instantly. Longer recordings automatically use background processing, which can take anywhere from a few minutes up to an hour or more for very long files. Keep this tab open and your device awake until it finishes. Files must be under 2 hours each &mdash; split anything longer before uploading.</p>

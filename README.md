@@ -1,6 +1,6 @@
 # Tamil Voice-to-Text
 
-A simple, self-contained web page that converts Tamil M4A voice recordings into Tamil text, using the Sarvam AI Speech-to-Text API.
+A simple, self-contained web page that converts Tamil voice recordings (M4A, MP3, or WAV) into Tamil text, using the Sarvam AI Speech-to-Text API.
 
 ## How it works
 
@@ -11,16 +11,20 @@ Everything runs in your browser. Your audio is sent directly from your device to
 
 ## Important limits
 
-- **Maximum 2 hours per file.** Sarvam's Batch API hard-caps at 2 hours of audio per file. If a recording is longer, split it into two or more parts before uploading (any free audio splitter or even just re-recording in two sessions works).
+- **Maximum 2 hours per file.** Sarvam's Batch API hard-caps at 2 hours of audio per file. If a recording is longer, split it into two or more parts before uploading.
 - Processing time for long files varies -- a 2-hour recording may take anywhere from several minutes to over an hour to finish. Keep the browser tab open and your device awake while it works.
 - If a job doesn't finish within 3 hours, it will show a timeout error -- this usually means the file should be split into smaller pieces.
+
+## Supported formats
+
+M4A, MP3, and WAV are all supported natively -- no conversion needed. You can mix formats in the same upload batch.
 
 ## How to use it
 
 1. Open the page (link shared with you).
 2. Paste your Sarvam API key into the "API Key" box. It is saved only in your own browser (localStorage) and is never uploaded anywhere.
 3. Choose a transcription style (Clean transcript is recommended for most recordings).
-4. Tap the upload box and choose one or more `.m4a` files, or drag them in.
+4. Tap the upload box and choose one or more `.m4a`, `.mp3`, or `.wav` files, or drag them in.
 5. Tap **Transcribe**. Short files finish in seconds; long files show a live "processing" counter.
 6. When each file finishes, you can read the Tamil text on screen or tap **Download .txt** to save it.
 
